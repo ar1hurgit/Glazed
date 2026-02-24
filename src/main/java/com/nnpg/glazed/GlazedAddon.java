@@ -86,6 +86,7 @@ public class GlazedAddon extends MeteorAddon {
         Modules.get().add(new SkeletonESP());
         Modules.get().add(new RainNoti());
         Modules.get().add(new AutoPearlChain());
+        Modules.get().add(new AutoShopOrder());
         Modules.get().add(new AutoBlazeRodOrder());
         Modules.get().add(new BlazeRodDropper());
         Modules.get().add(new BreachSwap());
