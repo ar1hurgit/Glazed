@@ -88,6 +88,10 @@ public class AHSniper extends Module {
     private final Setting<Boolean> exactEnchantments;
     private final Setting<Boolean> autoSell;
     private final Setting<String> sellPrice;
+    private final Setting<String> sellPrice2;
+    private final Setting<String> sellPrice3;
+    private final Setting<String> sellPrice4;
+    private final Setting<String> sellPrice5;
     private final Setting<Boolean> webhookEnabled;
     private final Setting<String> webhookUrl;
     private final Setting<Boolean> selfPing;
@@ -128,6 +132,9 @@ public class AHSniper extends Module {
     private final int SELL_DELAY_TICKS;
     private int lastActionTicks;
     private final int MAX_STAGNANT_TICKS;
+    private int itemsToSellCount;
+    private int currentSellIndex;
+    private List<Integer> itemSlotsToSell;
     private final HttpClient httpClient;
 
     public AHSniper() {
@@ -438,6 +445,34 @@ public class AHSniper extends Module {
             .visible(this.autoSell::get)
             .build());
 
+        this.sellPrice2 = this.sgAutoSell.add(new StringSetting.Builder()
+            .name("sell-price-2")
+            .description("Price for the second item when selling multiple.")
+            .defaultValue("15m")
+            .visible(this.autoSell::get)
+            .build());
+
+        this.sellPrice3 = this.sgAutoSell.add(new StringSetting.Builder()
+            .name("sell-price-3")
+            .description("Price for the third item when selling multiple.")
+            .defaultValue("16m")
+            .visible(this.autoSell::get)
+            .build());
+
+        this.sellPrice4 = this.sgAutoSell.add(new StringSetting.Builder()
+            .name("sell-price-4")
+            .description("Price for the fourth item when selling multiple.")
+            .defaultValue("17m")
+            .visible(this.autoSell::get)
+            .build());
+
+        this.sellPrice5 = this.sgAutoSell.add(new StringSetting.Builder()
+            .name("sell-price-5")
+            .description("Price for the fifth item when selling multiple.")
+            .defaultValue("18m")
+            .visible(this.autoSell::get)
+            .build());
+
         this.webhookEnabled = this.sgWebhook.add(new BoolSetting.Builder()
         .name("webhook-enabled")
         .description("Enable Discord webhook notifications.")
@@ -517,6 +552,9 @@ public class AHSniper extends Module {
         this.SELL_DELAY_TICKS = 2;
         this.lastActionTicks = 0;
         this.MAX_STAGNANT_TICKS = 2200;
+        this.itemsToSellCount = 0;
+        this.currentSellIndex = 0;
+        this.itemSlotsToSell = new ArrayList<>();
         this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10L)).build();
     }
 
@@ -641,6 +679,9 @@ public class AHSniper extends Module {
         this.attemptedEnchantments = "";
         this.currentSnipedItem = null;
         this.lastClickedSlot = -1;
+        this.itemsToSellCount = 0;
+        this.currentSellIndex = 0;
+        this.itemSlotsToSell.clear();
         if (this.debugMode.get()) {
             this.info("Debug: State reset completed");
         }
@@ -1173,42 +1214,131 @@ public class AHSniper extends Module {
     }
 
     private void performAutoSell() {
-        double price = this.parsePrice(this.sellPrice.get());
-        if (price <= 0.0) {
+        if (this.mc.player == null || this.currentSnipedItem == null) {
             this.sellingPhase = false;
             return;
         }
-        
-        // Find the purchased item in inventory and move it to hand
-        if (this.mc.player != null && this.currentSnipedItem != null) {
-            int itemSlot = -1;
-            // Search in inventory for the item
+
+        // First call - find all items and prepare for selling
+        if (this.itemSlotsToSell.isEmpty()) {
+            // Find all slots containing the sniped item
             for (int i = 0; i < this.mc.player.getInventory().size(); ++i) {
                 ItemStack stack = this.mc.player.getInventory().getStack(i);
-                if (stack.isOf(this.currentSnipedItem)) {
-                    itemSlot = i;
-                    break;
+                if (stack.isOf(this.currentSnipedItem) && stack.getCount() > 0) {
+                    this.itemSlotsToSell.add(i);
                 }
             }
             
-            if (itemSlot != -1) {
-                // Swap item to main hand
-                int handSlot = this.mc.player.getInventory().selectedSlot;
-                if (itemSlot != handSlot && itemSlot < 9) {
-                    // Item is in hotbar, just select it
-                    this.mc.player.getInventory().selectedSlot = itemSlot;
-                } else if (itemSlot >= 9) {
-                    // Item is in inventory, swap with current hotbar slot
-                    this.mc.interactionManager.clickSlot(0, itemSlot, handSlot, SlotActionType.SWAP, this.mc.player);
+            this.itemsToSellCount = this.itemSlotsToSell.size();
+            this.currentSellIndex = 0;
+            
+            if (this.itemSlotsToSell.isEmpty()) {
+                if (this.notifications.get()) {
+                    this.info("No items found to sell!");
                 }
+                this.sellingPhase = false;
+                return;
+            }
+            
+            if (this.notifications.get()) {
+                this.info("Found %d item(s) to sell individually", this.itemsToSellCount);
             }
         }
-        
-        // Execute the sell command
-        this.mc.getNetworkHandler().sendChatCommand(String.format("ah sell %d", (int) price));
-        this.sellingPhase = false;
-        this.navigationDelayCounter = 5;
-        this.lastActionTicks = 0;
+
+        // Sell one item at a time
+        if (this.currentSellIndex < this.itemSlotsToSell.size()) {
+            int itemSlot = this.itemSlotsToSell.get(this.currentSellIndex);
+            ItemStack stack = this.mc.player.getInventory().getStack(itemSlot);
+            
+            // Check if the stack has more than 1 item - need to split
+            if (stack.getCount() > 1) {
+                // Pick up the whole stack (left click)
+                this.mc.interactionManager.clickSlot(0, itemSlot, 0, SlotActionType.PICKUP, this.mc.player);
+                // Right-click to place 1 item back
+                this.mc.interactionManager.clickSlot(0, itemSlot, 1, SlotActionType.PICKUP, this.mc.player);
+                // Now cursor has (count-1) items, slot has 1 item
+                // We sell the 1 item in the slot
+            }
+            
+            // Get the appropriate price for this item
+            String priceStr = this.getSellPriceForIndex(this.currentSellIndex);
+            double price = this.parsePrice(priceStr);
+            
+            if (price <= 0.0) {
+                if (this.notifications.get()) {
+                    this.info("Invalid sell price for item %d, skipping", this.currentSellIndex + 1);
+                }
+                this.currentSellIndex++;
+                this.sellingDelayCounter = SELL_DELAY_TICKS;
+                return;
+            }
+            
+            // Move item to main hand if needed
+            int handSlot = this.mc.player.getInventory().selectedSlot;
+            ItemStack handStack = this.mc.player.getInventory().getMainHandStack();
+            
+            // If the item is not in the main hand, we need to handle it
+            if (itemSlot < 9) {
+                // Item is in hotbar - just select it
+                this.mc.player.getInventory().selectedSlot = itemSlot;
+            } else if (itemSlot >= 9) {
+                // Item is in inventory - need to swap with hotbar
+                // First check if hand is empty or has a different item
+                if (!handStack.isEmpty() && !handStack.isOf(this.currentSnipedItem)) {
+                    // Find an empty slot in inventory to put the hand item
+                    int emptySlot = -1;
+                    for (int i = 9; i < this.mc.player.getInventory().size(); ++i) {
+                        if (this.mc.player.getInventory().getStack(i).isEmpty()) {
+                            emptySlot = i;
+                            break;
+                        }
+                    }
+                    if (emptySlot != -1) {
+                        // Move hand item to empty slot
+                        this.mc.interactionManager.clickSlot(0, emptySlot, handSlot, SlotActionType.SWAP, this.mc.player);
+                    }
+                }
+                // Now swap the item to hand
+                this.mc.interactionManager.clickSlot(0, itemSlot, handSlot, SlotActionType.SWAP, this.mc.player);
+            }
+            
+            // Execute the sell command
+            this.mc.getNetworkHandler().sendChatCommand(String.format("ah sell %d", (int) price));
+            
+            if (this.notifications.get()) {
+                this.info("Selling item %d/%d for %s", this.currentSellIndex + 1, this.itemsToSellCount, this.formatPrice(price));
+            }
+            
+            this.currentSellIndex++;
+            this.lastActionTicks = 0;
+            
+            // If there are more items to sell, set delay for next sell
+            if (this.currentSellIndex < this.itemSlotsToSell.size()) {
+                this.sellingDelayCounter = SELL_DELAY_TICKS + 5; // Extra delay between sells
+            } else {
+                // All items sold, reset state
+                this.sellingPhase = false;
+                this.itemSlotsToSell.clear();
+                this.itemsToSellCount = 0;
+                this.currentSellIndex = 0;
+                this.navigationDelayCounter = 5;
+            }
+        } else {
+            this.sellingPhase = false;
+            this.itemSlotsToSell.clear();
+            this.itemsToSellCount = 0;
+            this.currentSellIndex = 0;
+        }
+    }
+
+    private String getSellPriceForIndex(int index) {
+        return switch (index) {
+            case 0 -> this.sellPrice.get();
+            case 1 -> this.sellPrice2.get();
+            case 2 -> this.sellPrice3.get();
+            case 3 -> this.sellPrice4.get();
+            default -> this.sellPrice5.get();
+        };
     }
 
     private boolean isValidAuctionItem(ItemStack stack) {
