@@ -265,9 +265,14 @@ public class AutoShopOrder extends Module {
         }
     }
     private void playLoudAdminSound() {
+        if (mc.player == null || mc.world == null) return;
         mc.execute(() -> {
             for (int i = 0; i < 5; i++) {
-                mc.player.playSound(SoundEvents.BLOCK_ANVIL_DESTROY, 10000f, 1);
+                mc.player.playSound(
+                        net.minecraft.sound.SoundEvents.ENTITY_ENDER_DRAGON_GROWL,
+                        1000f,
+                        0.5f
+                );
             }
         });
     }
